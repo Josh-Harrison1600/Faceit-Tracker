@@ -1,0 +1,242 @@
+from __future__ import annotations
+
+import asyncio
+import logging
+from dataclasses import dataclass
+
+import httpx
+
+logger = logging.getLogger(__name__)
+
+FACEIT_API_BASE = "https://open.faceit.com/data/v4"
+
+
+class FaceitError(Exception):
+    pass
+
+
+class FaceitNotFound(FaceitError):
+    pass
+
+
+@dataclass(frozen=True)
+class PlayerProfile:
+    player_id: str
+    nickname: str
+    elo: int
+    level: int
+
+
+@dataclass(frozen=True)
+class MatchResult:
+    finished_at: int
+    won: bool
+    match_id: str | None = None
+
+
+class FaceitClient:
+    def __init__(self, api_key: str, game_id: str = "cs2") -> None:
+        self.game_id = game_id
+        self._client = httpx.AsyncClient(
+            base_url=FACEIT_API_BASE,
+            headers={
+                "Authorization": f"Bearer {api_key}",
+                "Accept": "application/json",
+            },
+            timeout=30.0,
+        )
+
+    async def close(self) -> None:
+        if not self._client.is_closed:
+            await self._client.aclose()
+
+    async def _get(self, path: str, params: dict[str, str | int] | None = None) -> dict:
+        delay = 1.0
+        last_error: Exception | None = None
+        for attempt in range(5):
+            try:
+                response = await self._client.get(path, params=params)
+            except httpx.HTTPError as exc:
+                last_error = exc
+                logger.warning("FACEIT request failed (%s): %s", path, exc)
+                await asyncio.sleep(delay)
+                delay = min(delay * 2, 30)
+                continue
+
+            if response.status_code == 429:
+                retry_after = response.headers.get("Retry-After")
+                wait = float(retry_after) if retry_after else delay
+                logger.warning("FACEIT rate limited; retrying in %.1fs", wait)
+                await asyncio.sleep(wait)
+                delay = min(delay * 2, 30)
+                continue
+
+            if response.status_code == 404:
+                raise FaceitNotFound(f"FACEIT resource not found: {path}")
+
+            if response.status_code >= 400:
+                raise FaceitError(
+                    f"FACEIT {response.status_code} for {path}: {response.text[:200]}"
+                )
+
+            return response.json()
+
+        raise FaceitError(f"FACEIT request failed after retries: {path}") from last_error
+
+    async def get_player_by_nickname(self, nickname: str) -> PlayerProfile:
+        data = await self._get("/players", params={"nickname": nickname})
+        return self._profile_from_payload(data)
+
+    async def get_player(self, player_id: str) -> PlayerProfile:
+        data = await self._get(f"/players/{player_id}")
+        return self._profile_from_payload(data)
+
+    def _profile_from_payload(self, data: dict) -> PlayerProfile:
+        nickname = data.get("nickname") or "unknown"
+        player_id = data.get("player_id")
+        if not player_id:
+            raise FaceitError(f"FACEIT player payload missing player_id for {nickname}")
+
+        games = data.get("games") or {}
+        game = games.get(self.game_id)
+        if not game:
+            raise FaceitError(f"{nickname} has no {self.game_id} FACEIT profile")
+
+        return PlayerProfile(
+            player_id=player_id,
+            nickname=nickname,
+            elo=int(game.get("faceit_elo") or 0),
+            level=int(game.get("skill_level") or 0),
+        )
+
+    async def matchmaking_matches(
+        self, player_id: str, from_ts: int, to_ts: int
+    ) -> list[MatchResult]:
+        matches: list[MatchResult] = []
+        offset = 0
+        limit = 100
+
+        while offset <= 1000:
+            data = await self._get(
+                f"/players/{player_id}/history",
+                params={
+                    "game": self.game_id,
+                    "from": from_ts,
+                    "to": to_ts,
+                    "offset": offset,
+                    "limit": limit,
+                },
+            )
+            items = data.get("items") or []
+            if not items:
+                break
+
+            for match in items:
+                finished_at = int(match.get("finished_at") or 0)
+                if finished_at and (finished_at < from_ts or finished_at >= to_ts):
+                    continue
+                result = _matchmaking_result(player_id, match)
+                if result is None:
+                    continue
+                matches.append(
+                    MatchResult(
+                        finished_at=finished_at,
+                        won=result,
+                        match_id=match.get("match_id"),
+                    )
+                )
+
+            if len(items) < limit:
+                break
+            offset += limit
+
+        return matches
+
+    async def player_match_stats(
+        self, player_id: str, from_ts: int, to_ts: int, *, limit: int = 100
+    ) -> list[dict]:
+        """Per-match CS2 stats. from/to are unix seconds; the API wants milliseconds."""
+        from_ms = from_ts * 1000
+        to_ms = to_ts * 1000
+        try:
+            return await self._player_match_stats_pages(
+                player_id, limit, extra={"from": from_ms, "to": to_ms}
+            )
+        except FaceitError:
+            logger.info("Retrying player CS2 stats without from/to for %s", player_id)
+            return await self._player_match_stats_pages(player_id, limit)
+
+    async def _player_match_stats_pages(
+        self,
+        player_id: str,
+        limit: int,
+        extra: dict[str, str | int] | None = None,
+    ) -> list[dict]:
+        items: list[dict] = []
+        offset = 0
+        while offset <= 200:
+            params: dict[str, str | int] = {"offset": offset, "limit": limit}
+            if extra:
+                params.update(extra)
+            data = await self._get(
+                f"/players/{player_id}/games/{self.game_id}/stats",
+                params=params,
+            )
+            page = data.get("items") or []
+            if not page:
+                break
+            items.extend(page)
+            if len(page) < limit:
+                break
+            offset += limit
+        return items
+
+    async def match_stats(self, match_id: str) -> dict:
+        return await self._get(f"/matches/{match_id}/stats")
+
+
+def player_row_from_match_stats(data: dict, player_id: str) -> dict | None:
+    """Pull one player's CS2 row out of GET /matches/{id}/stats."""
+    for rnd in data.get("rounds") or []:
+        map_name = (rnd.get("round_stats") or {}).get("Map")
+        match_id = rnd.get("match_id") or (rnd.get("round_stats") or {}).get("Match Id")
+        for team in rnd.get("teams") or []:
+            for player in team.get("players") or []:
+                if player.get("player_id") != player_id:
+                    continue
+                stats = dict(player.get("player_stats") or {})
+                if map_name and not stats.get("Map"):
+                    stats["Map"] = map_name
+                if match_id and not stats.get("Match Id"):
+                    stats["Match Id"] = match_id
+                return {"stats": stats}
+    return None
+
+
+def _matchmaking_result(player_id: str, match: dict) -> bool | None:
+    competition = str(match.get("competition_type") or "").lower()
+    if competition != "matchmaking":
+        return None
+
+    status = str(match.get("status") or "").upper()
+    if status and status not in {"FINISHED", "FINISHED_CLOSED"}:
+        return None
+
+    winner = (match.get("results") or {}).get("winner")
+    if not winner:
+        return None
+
+    teams = match.get("teams") or {}
+    player_team: str | None = None
+    for team_key, team in teams.items():
+        players = (team or {}).get("players") or []
+        if any(player.get("player_id") == player_id for player in players):
+            player_team = team_key
+            break
+
+    if player_team is None:
+        return None
+    if player_team == winner:
+        return True
+    team = teams.get(player_team) or {}
+    return team.get("team_id") == winner

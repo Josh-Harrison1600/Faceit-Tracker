@@ -1,0 +1,15 @@
+[Unit]
+Description=CS Progress Tracker Discord bot
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=%h/csprogresstracker
+ExecStart=%h/csprogresstracker/.venv/bin/python -m bot.main
+Restart=always
+RestartSec=10
+Environment=PYTHONUNBUFFERED=1
+
+[Install]
+WantedBy=default.target

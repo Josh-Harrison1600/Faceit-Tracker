@@ -1,0 +1,6 @@
+# Copy this file to players.yaml and list FACEIT nicknames to track.
+# Nicknames here are added to the database on startup if they are not already stored.
+# You can also manage the roster with /addplayer and /removeplayer in Discord.
+
+players:
+  - YourFriendNick
