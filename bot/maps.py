@@ -2,14 +2,17 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from dataclasses import dataclass
+import re
+from dataclasses import dataclass, fields
 from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 
 from bot.db import Store
-from bot.faceit import FaceitClient, FaceitError, player_row_from_match_stats
+from bot.faceit import FaceitClient, FaceitError, MatchResult, player_row_from_match_stats
 
 logger = logging.getLogger(__name__)
+
+PRIOR_MATCH_LOOKBACK = 14 * 24 * 3600
 
 
 @dataclass
@@ -26,6 +29,9 @@ class MapStats:
     utility_damage: float | None = None
     flashes_thrown: int | None = None
     enemies_blinded: int | None = None
+    elo: int | None = None
+    elo_delta: int | None = None
+    score: str | None = None
     finished_at: int | None = None
     match_id: str | None = None
 
@@ -64,6 +70,15 @@ def _as_float(raw: str | None) -> float | None:
         return None
 
 
+def _normalize_score(raw: str | None) -> str | None:
+    if raw is None:
+        return None
+    match = re.match(r"^(\d+)\s*[/:-]\s*(\d+)$", raw.strip())
+    if not match:
+        return None
+    return f"{match.group(1)}-{match.group(2)}"
+
+
 def parse_map_stats(item: dict, *, won: bool | None = None, match_id: str | None = None) -> MapStats:
     stats = item.get("stats") or item
     map_name = _stat(stats, "Map", "Map Name") or "Unknown"
@@ -93,38 +108,56 @@ def parse_map_stats(item: dict, *, won: bool | None = None, match_id: str | None
         enemies_blinded=_as_int(
             _stat(stats, "Enemies Flashed", "Enemies Blinded", "Flash Successes", "Total Enemies Flashed")
         ),
+        elo=_as_int(_stat(stats, "Elo", "ELO", "Faceit Elo", "FACEIT Elo")),
+        score=_normalize_score(_stat(stats, "Score", "Final Score", "Match Score")),
         finished_at=_as_int(_stat(stats, "Match Finished At", "Finished At")),
         match_id=match_id or _stat(stats, "Match Id", "Match ID", "match_id"),
     )
 
 
 def format_map_block(stats: MapStats) -> str:
-    result = "W" if stats.won else "L" if stats.won is False else "?"
-    kd_part = "K/D —"
+    if stats.won is True:
+        result = "Win"
+    elif stats.won is False:
+        result = "Loss"
+    else:
+        result = "?"
+    lines = [f"{stats.map_name} - {result}"]
+    if stats.score:
+        lines.append(f"Score: {stats.score}")
+    if stats.elo_delta is not None:
+        delta = stats.elo_delta
+        sign = "+" if delta > 0 else ""
+        lines.append(f"ELO {sign}{delta}")
     if stats.kills is not None and stats.deaths is not None:
         kd_str = f"{stats.kd:.2f}" if stats.kd is not None else "—"
-        kd_part = f"K/D {stats.kills}/{stats.deaths} ({kd_str})"
-    bits = [kd_part]
+        lines.append(f"K/D {stats.kills}/{stats.deaths} ({kd_str})")
     if stats.adr is not None:
-        bits.append(f"ADR {stats.adr:.0f}")
+        lines.append(f"ADR {stats.adr:.0f}")
     if stats.hs_percent is not None:
-        bits.append(f"HS {stats.hs_percent:.0f}%")
+        lines.append(f"HS {stats.hs_percent:.0f}%")
     if stats.kpr is not None:
-        bits.append(f"KPR {stats.kpr:.2f}")
-    line2 = "  ·  ".join(bits)
-    extra: list[str] = []
+        lines.append(f"KPR {stats.kpr:.2f}")
     if stats.rating is not None:
-        extra.append(f"Rating {stats.rating:.2f}")
+        lines.append(f"Rating {stats.rating:.2f}")
     if stats.utility_damage is not None:
-        extra.append(f"Util dmg {stats.utility_damage:.0f}")
+        lines.append(f"Util dmg {stats.utility_damage:.0f}")
     if stats.flashes_thrown is not None and stats.enemies_blinded is not None:
-        extra.append(f"Flashes {stats.flashes_thrown} thrown / {stats.enemies_blinded} blinded")
+        lines.append(f"Flashes {stats.flashes_thrown} thrown / {stats.enemies_blinded} blinded")
     elif stats.flashes_thrown is not None:
-        extra.append(f"Flashes {stats.flashes_thrown} thrown")
-    lines = [f"{stats.map_name}  {result}", line2]
-    if extra:
-        lines.append("  ·  ".join(extra))
+        lines.append(f"Flashes {stats.flashes_thrown} thrown")
+    elif stats.enemies_blinded is not None:
+        lines.append(f"Flashes {stats.enemies_blinded} blinded")
     return "\n".join(lines)
+
+
+def _apply_elo_deltas(maps: list[MapStats]) -> None:
+    previous_elo: int | None = None
+    for stats in maps:
+        if previous_elo is not None and stats.elo is not None:
+            stats.elo_delta = stats.elo - previous_elo
+        if stats.elo is not None:
+            previous_elo = stats.elo
 
 
 def _item_match_id(item: dict) -> str | None:
@@ -172,8 +205,9 @@ async def _player_maps(
     *,
     limit: int | None = None,
 ) -> PlayerMaps:
+    lookback_from = from_ts - PRIOR_MATCH_LOOKBACK
     try:
-        matches = await faceit.matchmaking_matches(player_id, from_ts, to_ts)
+        matches = await faceit.matchmaking_matches(player_id, lookback_from, to_ts)
     except FaceitError as exc:
         logger.warning("Match history failed for %s: %s", nickname, exc)
         return PlayerMaps(nickname=nickname, maps=[], error="Could not fetch matches")
@@ -181,15 +215,11 @@ async def _player_maps(
     if not matches:
         return PlayerMaps(nickname=nickname, maps=[])
 
-    matches.sort(key=lambda item: item.finished_at, reverse=True)
-    if limit:
-        matches = matches[:limit]
-
-        try:
-            raw_stats = await faceit.player_match_stats(player_id, from_ts - 120, to_ts + 120)
-        except FaceitError as exc:
-            logger.warning("Match stats failed for %s: %s", nickname, exc)
-            raw_stats = []
+    try:
+        raw_stats = await faceit.player_match_stats(player_id, lookback_from - 120, to_ts + 120)
+    except FaceitError as exc:
+        logger.warning("Match stats failed for %s: %s", nickname, exc)
+        raw_stats = []
 
     by_id = {}
     for item in raw_stats:
@@ -197,28 +227,73 @@ async def _player_maps(
         if mid:
             by_id[mid] = item
 
-    maps: list[MapStats] = []
-    for match in matches:
-        item = by_id.get(match.match_id or "")
-        if item is None and match.match_id:
-            item = await _match_stats_row(faceit, match.match_id, player_id)
-        if item is None:
-            maps.append(
-                MapStats(
-                    map_name="Unknown",
-                    won=match.won,
-                    finished_at=match.finished_at,
-                    match_id=match.match_id,
-                )
-            )
-            continue
-        parsed = parse_map_stats(item, won=match.won, match_id=match.match_id)
-        if parsed.finished_at is None:
-            parsed.finished_at = match.finished_at
-        maps.append(parsed)
+    matches.sort(key=lambda item: item.finished_at)
+    all_maps = [_map_from_match(match, by_id.get(match.match_id or "")) for match in matches]
+    all_maps.sort(key=lambda item: item.finished_at or 0)
 
-    maps.sort(key=lambda item: item.finished_at or 0)
+    maps = [item for item in all_maps if (item.finished_at or 0) >= from_ts]
+    if limit:
+        maps = maps[-limit:]
+    needed = {item.match_id for item in maps if item.match_id}
+    if maps:
+        prior = next(
+            (
+                item
+                for item in reversed(all_maps)
+                if (item.finished_at or 0) < (maps[0].finished_at or 0)
+            ),
+            None,
+        )
+        if prior and prior.match_id:
+            needed.add(prior.match_id)
+
+    displayed_ids = {item.match_id for item in maps if item.match_id}
+    for stats in all_maps:
+        if not stats.match_id or stats.match_id not in needed:
+            continue
+        missing_core = stats.map_name == "Unknown"
+        missing_score = stats.match_id in displayed_ids and not stats.score
+        if not missing_core and not missing_score:
+            continue
+        item = await _match_stats_row(faceit, stats.match_id, player_id)
+        if item is None:
+            continue
+        parsed = parse_map_stats(item, won=stats.won, match_id=stats.match_id)
+        if parsed.finished_at is None:
+            parsed.finished_at = stats.finished_at
+        _merge_map_stats(stats, parsed)
+
+    _apply_elo_deltas(all_maps)
+    maps = [item for item in all_maps if (item.finished_at or 0) >= from_ts]
+    if limit:
+        maps = maps[-limit:]
     return PlayerMaps(nickname=nickname, maps=maps)
+
+
+def _map_from_match(match: MatchResult, item: dict | None) -> MapStats:
+    if item is None:
+        return MapStats(
+            map_name="Unknown",
+            won=match.won,
+            finished_at=match.finished_at,
+            match_id=match.match_id,
+        )
+    parsed = parse_map_stats(item, won=match.won, match_id=match.match_id)
+    if parsed.finished_at is None:
+        parsed.finished_at = match.finished_at
+    return parsed
+
+
+def _merge_map_stats(base: MapStats, extra: MapStats) -> None:
+    for field in fields(MapStats):
+        current = getattr(base, field.name)
+        incoming = getattr(extra, field.name)
+        if field.name == "map_name":
+            if current == "Unknown" and incoming and incoming != "Unknown":
+                setattr(base, field.name, incoming)
+            continue
+        if current is None and incoming is not None:
+            setattr(base, field.name, incoming)
 
 
 async def _match_stats_row(

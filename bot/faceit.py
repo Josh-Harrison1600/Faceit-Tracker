@@ -198,18 +198,56 @@ class FaceitClient:
 def player_row_from_match_stats(data: dict, player_id: str) -> dict | None:
     """Pull one player's CS2 row out of GET /matches/{id}/stats."""
     for rnd in data.get("rounds") or []:
-        map_name = (rnd.get("round_stats") or {}).get("Map")
-        match_id = rnd.get("match_id") or (rnd.get("round_stats") or {}).get("Match Id")
-        for team in rnd.get("teams") or []:
+        round_stats = rnd.get("round_stats") or {}
+        map_name = round_stats.get("Map")
+        match_id = rnd.get("match_id") or round_stats.get("Match Id")
+        teams = rnd.get("teams") or []
+        player_team = None
+        player_stats: dict | None = None
+        for team in teams:
             for player in team.get("players") or []:
                 if player.get("player_id") != player_id:
                     continue
-                stats = dict(player.get("player_stats") or {})
-                if map_name and not stats.get("Map"):
-                    stats["Map"] = map_name
-                if match_id and not stats.get("Match Id"):
-                    stats["Match Id"] = match_id
-                return {"stats": stats}
+                player_team = team
+                player_stats = dict(player.get("player_stats") or {})
+                break
+            if player_stats is not None:
+                break
+        if player_stats is None:
+            continue
+        if map_name and not player_stats.get("Map"):
+            player_stats["Map"] = map_name
+        if match_id and not player_stats.get("Match Id"):
+            player_stats["Match Id"] = match_id
+        score = _team_score_for_player(player_team, teams) or round_stats.get("Score")
+        if score and not player_stats.get("Score"):
+            player_stats["Score"] = score
+        return {"stats": player_stats}
+    return None
+
+
+def _team_score_for_player(player_team: dict | None, teams: list) -> str | None:
+    if player_team is None:
+        return None
+    ours = _team_final_score(player_team)
+    theirs = None
+    for team in teams:
+        if team is player_team:
+            continue
+        theirs = _team_final_score(team)
+        if theirs is not None:
+            break
+    if ours is None or theirs is None:
+        return None
+    return f"{ours}-{theirs}"
+
+
+def _team_final_score(team: dict) -> str | None:
+    stats = team.get("team_stats") or {}
+    for key in ("Final Score", "Score", "Team Score"):
+        value = stats.get(key)
+        if value is not None and str(value) != "":
+            return str(value)
     return None
 
 

@@ -109,7 +109,7 @@ def build_daily_embed(players: list[PlayerMaps], *, day: datetime) -> discord.Em
         description=day.strftime("%A, %B ") + _ordinal(day.day),
         color=discord.Color.gold(),
     )
-    embed.set_footer(text="CS2 matchmaking · Swing is not available from FACEIT")
+    embed.set_footer(text="CS2 matchmaking")
     if not players:
         embed.add_field(name="Roster", value="No players tracked yet.", inline=False)
         return embed
@@ -126,7 +126,7 @@ def build_last_map_embed(player: PlayerMaps) -> discord.Embed:
         title=f"Last map · {player.nickname}",
         color=discord.Color.gold(),
     )
-    embed.set_footer(text="CS2 matchmaking · Swing is not available from FACEIT")
+    embed.set_footer(text="CS2 matchmaking")
     if player.error:
         embed.description = player.error
         return embed

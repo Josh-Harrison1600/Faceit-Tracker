@@ -101,10 +101,19 @@ One Discord message, one field per player. Example:
 
 ```
 NineOwl9
-Mirage  W
-K/D 18/12 (1.50)  ·  ADR 92  ·  HS 41%  ·  KPR 0.75
-Rating 1.12  ·  Util dmg 180  ·  Flashes 6 thrown / 4 blinded
+Ancient - Loss
+Score: 7-13
+ELO -12
+K/D 18/12 (1.50)
+ADR 92
+HS 41%
+KPR 0.75
+Rating 1.12
+Util dmg 180
+Flashes 6 thrown / 4 blinded
 ```
+
+Lines are omitted when FACEIT does not send that stat. **Swing is not available** from FACEIT (it is a Leetify stat). Rating is shown only if FACEIT includes a Rating field. ELO change is this match’s Elo minus the previous matchmaking match.
 
 `/last-map` uses the same stats for a single recent map. It is not scheduled.
 
