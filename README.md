@@ -68,9 +68,10 @@ python -m bot.main
 | `/setweekly` | Manage Server | Save this channel for Sunday weekly recaps |
 | `/setdaily` | Manage Server | Save this channel for daily map breakdowns |
 | `/report` | Anyone | Post **this** Sunday–Saturday week so far. Future days are `N/A` |
+| `/player-report nickname` | Anyone | Same week recap as `/report`, for one player (roster nick, or any FACEIT nick) |
 | `/last-map nickname` | Anyone | Per-map stats for that player's most recent matchmaking map (roster nick, or any FACEIT nick) |
 
-`/report` and `/last-map` post in whatever channel you run them. Scheduled recaps go to the saved channels.
+`/report`, `/player-report`, and `/last-map` post in whatever channel you run them. Scheduled recaps go to the saved channels.
 
 ## Channels and schedule
 
@@ -90,7 +91,7 @@ On Sunday at 11:59 PM both the weekly recap and the daily breakdown post, to the
 - Days are **Sun–Sat** in `TIMEZONE`.
 - **`/report`:** current week. Today can be partial. Days after today are `N/A`.
 - **Sunday 11:59 PM:** posts the week that just **finished** (last Sunday through Saturday). This Sunday’s games go into next week’s recap.
-- Each player is one section in a **single** Discord message: peak ELO, Sunday start ELO, daily maps / W-L / ELO, then a weekly total.
+- Each player is one section in a **single** Discord message: Peak Elo, Peak Level, Current Elo, Current Level, then daily maps / W-L / ELO, then a weekly total.
 - W/L is CS2 **matchmaking** only. One matchmaking match counts as one map.
 - Daily ELO needs a midnight snapshot. If the bot was asleep, maps/W/L still show and ELO is `—`.
 - Players still calibrating have no ELO yet.

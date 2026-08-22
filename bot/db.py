@@ -207,6 +207,16 @@ class Store:
             return 0
         return int(row[0])
 
+    async def peak_level(self, player_id: str) -> int:
+        cursor = await self.db.execute(
+            "SELECT MAX(level) FROM snapshots WHERE player_id = ?",
+            (player_id,),
+        )
+        row = await cursor.fetchone()
+        if row is None or row[0] is None:
+            return 0
+        return int(row[0])
+
     def _snapshot_from_row(self, row: aiosqlite.Row | None) -> Snapshot | None:
         if row is None:
             return None

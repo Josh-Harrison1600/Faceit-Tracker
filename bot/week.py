@@ -41,6 +41,9 @@ class PlayerWeek:
     started_on: str | None = None
     calibrating: bool = False
     peak_elo: int | None = None
+    peak_level: int | None = None
+    current_elo: int | None = None
+    current_level: int | None = None
     error: str | None = None
 
     @property
@@ -132,6 +135,32 @@ async def collect_week_stats(
     return results
 
 
+async def collect_week_for_player(
+    store: Store,
+    faceit: FaceitClient,
+    timezone_name: str,
+    week_start: datetime,
+    player: TrackedPlayer,
+) -> PlayerWeek:
+    tz = ZoneInfo(timezone_name)
+    if week_start.tzinfo is None:
+        week_start = week_start.replace(tzinfo=tz)
+    else:
+        week_start = week_start.astimezone(tz)
+    now = datetime.now(tz)
+    week_end = week_start + timedelta(days=7)
+    return await _player_week(
+        store,
+        faceit,
+        player,
+        week_start=week_start,
+        week_end=week_end,
+        now=now,
+        from_ts=int(week_start.timestamp()),
+        to_ts=int(min(now, week_end).timestamp()),
+    )
+
+
 async def _player_week(
     store: Store,
     faceit: FaceitClient,
@@ -168,7 +197,7 @@ async def _player_week(
             error="Could not fetch FACEIT data",
         )
 
-    if profile.nickname != player.nickname:
+    if profile.nickname != player.nickname and await store.get_player(player.player_id):
         await store.update_nickname(player.player_id, profile.nickname)
 
     matches: list[MatchResult] = []
@@ -260,6 +289,9 @@ async def _player_week(
         started_on=started_on,
         calibrating=calibrating,
         peak_elo=max(profile.elo, await store.peak_elo(player.player_id)),
+        peak_level=max(profile.level, await store.peak_level(player.player_id)),
+        current_elo=None if calibrating else profile.elo,
+        current_level=None if calibrating else profile.level,
     )
 
 

@@ -8,11 +8,17 @@ import discord
 from discord import app_commands
 from discord.ext import commands, tasks
 
-from bot.db import SETTING_DAILY_CHANNEL_ID, SETTING_WEEKLY_CHANNEL_ID, Store
+from bot.db import SETTING_DAILY_CHANNEL_ID, SETTING_WEEKLY_CHANNEL_ID, Store, TrackedPlayer
 from bot.faceit import FaceitClient, FaceitError, FaceitNotFound
 from bot.maps import collect_day_maps, last_map_for
 from bot.report import build_daily_embed, build_last_map_embed, build_week_embed
-from bot.week import collect_week_stats, completed_week_start, current_week_start, snapshot_all_players
+from bot.week import (
+    collect_week_for_player,
+    collect_week_stats,
+    completed_week_start,
+    current_week_start,
+    snapshot_all_players,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -162,6 +168,34 @@ class TrackerCog(commands.Cog):
             await interaction.followup.send("No players tracked yet. Use `/addplayer`.")
             return
         embed = build_week_embed(weeks, week_start=week_start, completed=False)
+        await interaction.followup.send(embed=embed)
+
+    @app_commands.command(name="player-report", description="Post this week's FACEIT recap for one player")
+    @app_commands.describe(nickname="FACEIT nickname")
+    async def player_report(self, interaction: discord.Interaction, nickname: str) -> None:
+        await interaction.response.defer()
+        nickname = nickname.strip()
+        player = await self.store.find_player_by_nickname(nickname)
+        if player is None:
+            try:
+                profile = await self.faceit.get_player_by_nickname(nickname)
+            except FaceitNotFound:
+                await interaction.followup.send(f"No FACEIT player named **{nickname}**.")
+                return
+            except FaceitError as exc:
+                await interaction.followup.send(f"Could not look up **{nickname}**: {exc}")
+                return
+            player = TrackedPlayer(
+                player_id=profile.player_id,
+                nickname=profile.nickname,
+                added_at="1970-01-01T00:00:00+00:00",
+            )
+        tz = ZoneInfo(self.bot.settings.timezone)
+        week_start = current_week_start(datetime.now(tz))
+        week = await collect_week_for_player(
+            self.store, self.faceit, self.bot.settings.timezone, week_start, player
+        )
+        embed = build_week_embed([week], week_start=week_start, completed=False)
         await interaction.followup.send(embed=embed)
 
     @app_commands.command(name="last-map", description="Break down a player's last FACEIT matchmaking map")

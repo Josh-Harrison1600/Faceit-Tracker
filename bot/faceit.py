@@ -45,10 +45,13 @@ class FaceitClient:
             },
             timeout=30.0,
         )
+        self._public = httpx.AsyncClient(timeout=30.0)
 
     async def close(self) -> None:
         if not self._client.is_closed:
             await self._client.aclose()
+        if not self._public.is_closed:
+            await self._public.aclose()
 
     async def _get(self, path: str, params: dict[str, str | int] | None = None) -> dict:
         delay = 1.0
@@ -193,6 +196,33 @@ class FaceitClient:
 
     async def match_stats(self, match_id: str) -> dict:
         return await self._get(f"/matches/{match_id}/stats")
+
+    async def player_elo_by_match(self, player_id: str) -> dict[str, int]:
+        """Per-match Elo from FACEIT's public stats time series (not on the Data API)."""
+        url = f"https://api.faceit.com/stats/v1/stats/time/users/{player_id}/games/{self.game_id}"
+        try:
+            response = await self._public.get(url, params={"size": 100})
+        except httpx.HTTPError as exc:
+            logger.warning("FACEIT elo history failed for %s: %s", player_id, exc)
+            return {}
+        if response.status_code >= 400:
+            logger.info("FACEIT elo history %s for %s", response.status_code, player_id)
+            return {}
+        payload = response.json()
+        items = payload if isinstance(payload, list) else payload.get("items") or []
+        by_id: dict[str, int] = {}
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+            match_id = item.get("matchId") or item.get("match_id") or item.get("Match Id")
+            elo = item.get("elo") or item.get("gameElo") or item.get("Elo")
+            if not match_id or elo is None or elo == "":
+                continue
+            try:
+                by_id[str(match_id)] = int(float(elo))
+            except (TypeError, ValueError):
+                continue
+        return by_id
 
 
 def player_row_from_match_stats(data: dict, player_id: str) -> dict | None:

@@ -70,6 +70,19 @@ def _as_float(raw: str | None) -> float | None:
         return None
 
 
+def _unix_seconds(raw: int | None) -> int | None:
+    if raw is None:
+        return None
+    if raw > 10_000_000_000:
+        return raw // 1000
+    return raw
+
+
+def _in_window(stats: MapStats, from_ts: int, to_ts: int) -> bool:
+    ts = stats.finished_at or 0
+    return from_ts <= ts < to_ts
+
+
 def _normalize_score(raw: str | None) -> str | None:
     if raw is None:
         return None
@@ -108,9 +121,10 @@ def parse_map_stats(item: dict, *, won: bool | None = None, match_id: str | None
         enemies_blinded=_as_int(
             _stat(stats, "Enemies Flashed", "Enemies Blinded", "Flash Successes", "Total Enemies Flashed")
         ),
-        elo=_as_int(_stat(stats, "Elo", "ELO", "Faceit Elo", "FACEIT Elo")),
+        elo=_as_int(_stat(stats, "Elo", "ELO", "Faceit Elo", "FACEIT Elo"))
+        or _as_int(_stat(item, "Elo", "elo", "faceit_elo")),
         score=_normalize_score(_stat(stats, "Score", "Final Score", "Match Score")),
-        finished_at=_as_int(_stat(stats, "Match Finished At", "Finished At")),
+        finished_at=_unix_seconds(_as_int(_stat(stats, "Match Finished At", "Finished At"))),
         match_id=match_id or _stat(stats, "Match Id", "Match ID", "match_id"),
     )
 
@@ -193,7 +207,15 @@ async def last_map_for(
 ) -> PlayerMaps:
     now = int(datetime.now(timezone.utc).timestamp())
     from_ts = now - 60 * 60 * 24 * 60
-    return await _player_maps(faceit, player_id, nickname, from_ts, now, limit=1)
+    current_elo: int | None = None
+    try:
+        profile = await faceit.get_player(player_id)
+        current_elo = profile.elo or None
+    except FaceitError:
+        logger.warning("Could not fetch live ELO for last map %s", nickname)
+    return await _player_maps(
+        faceit, player_id, nickname, from_ts, now, limit=1, current_elo=current_elo
+    )
 
 
 async def _player_maps(
@@ -204,6 +226,7 @@ async def _player_maps(
     to_ts: int,
     *,
     limit: int | None = None,
+    current_elo: int | None = None,
 ) -> PlayerMaps:
     lookback_from = from_ts - PRIOR_MATCH_LOOKBACK
     try:
@@ -231,7 +254,7 @@ async def _player_maps(
     all_maps = [_map_from_match(match, by_id.get(match.match_id or "")) for match in matches]
     all_maps.sort(key=lambda item: item.finished_at or 0)
 
-    maps = [item for item in all_maps if (item.finished_at or 0) >= from_ts]
+    maps = [item for item in all_maps if _in_window(item, from_ts, to_ts)]
     if limit:
         maps = maps[-limit:]
     needed = {item.match_id for item in maps if item.match_id}
@@ -259,12 +282,17 @@ async def _player_maps(
         if item is None:
             continue
         parsed = parse_map_stats(item, won=stats.won, match_id=stats.match_id)
-        if parsed.finished_at is None:
-            parsed.finished_at = stats.finished_at
+        history_finished = stats.finished_at
         _merge_map_stats(stats, parsed)
+        stats.finished_at = history_finished
 
+    await _fill_match_elo(faceit, player_id, all_maps)
+    if current_elo is not None and all_maps:
+        newest = max(all_maps, key=lambda item: item.finished_at or 0)
+        if newest.elo is None:
+            newest.elo = current_elo
     _apply_elo_deltas(all_maps)
-    maps = [item for item in all_maps if (item.finished_at or 0) >= from_ts]
+    maps = [item for item in all_maps if _in_window(item, from_ts, to_ts)]
     if limit:
         maps = maps[-limit:]
     return PlayerMaps(nickname=nickname, maps=maps)
@@ -279,8 +307,7 @@ def _map_from_match(match: MatchResult, item: dict | None) -> MapStats:
             match_id=match.match_id,
         )
     parsed = parse_map_stats(item, won=match.won, match_id=match.match_id)
-    if parsed.finished_at is None:
-        parsed.finished_at = match.finished_at
+    parsed.finished_at = match.finished_at
     return parsed
 
 
@@ -288,12 +315,30 @@ def _merge_map_stats(base: MapStats, extra: MapStats) -> None:
     for field in fields(MapStats):
         current = getattr(base, field.name)
         incoming = getattr(extra, field.name)
-        if field.name == "map_name":
-            if current == "Unknown" and incoming and incoming != "Unknown":
+        if field.name in {"map_name", "finished_at"}:
+            if field.name == "map_name" and current == "Unknown" and incoming and incoming != "Unknown":
                 setattr(base, field.name, incoming)
             continue
         if current is None and incoming is not None:
             setattr(base, field.name, incoming)
+
+
+async def _fill_match_elo(
+    faceit: FaceitClient, player_id: str, maps: list[MapStats]
+) -> None:
+    if all(item.elo is not None or not item.match_id for item in maps):
+        return
+    series = await faceit.player_elo_by_match(player_id)
+    if not series:
+        return
+    for stats in maps:
+        if stats.elo is not None or not stats.match_id:
+            continue
+        stats.elo = series.get(stats.match_id)
+        if stats.elo is None and stats.match_id.startswith("1-"):
+            stats.elo = series.get(stats.match_id[2:])
+        elif stats.elo is None:
+            stats.elo = series.get(f"1-{stats.match_id}")
 
 
 async def _match_stats_row(

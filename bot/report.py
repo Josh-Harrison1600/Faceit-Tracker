@@ -10,10 +10,6 @@ from bot.week import PlayerWeek
 WEEK_FOOTER = "CS2 matchmaking · ELO from midnight snapshots"
 
 
-def format_week_of(week_start: datetime) -> str:
-    return f"Week: {week_start.strftime('%B')} {_ordinal(week_start.day)}"
-
-
 def build_week_embed(
     weeks: list[PlayerWeek],
     *,
@@ -33,40 +29,31 @@ def build_week_embed(
         embed.add_field(name="Roster", value="No players tracked yet. Use `/addplayer`.", inline=False)
         return embed
 
-    week_line = format_week_of(week_start)
     for week in weeks:
         embed.add_field(
             name=week.nickname,
-            value=_player_body(week, week_line)[:1024],
+            value=_player_body(week)[:1024],
             inline=False,
         )
     return embed
 
 
-def _player_body(week: PlayerWeek, week_line: str) -> str:
+def _player_body(week: PlayerWeek) -> str:
+    header = [
+        f"Peak Elo: {week.peak_elo if week.peak_elo is not None else 0}",
+        f"Peak Level: {week.peak_level if week.peak_level is not None else 0}",
+        f"Current Elo: {week.current_elo if week.current_elo is not None else 0}",
+        f"Current Level: {week.current_level if week.current_level is not None else 0}",
+    ]
     if week.error:
-        return f"Peak Elo: {week.peak_elo if week.peak_elo is not None else 0}\n{week_line}\n{week.error}"
+        return "\n".join([*header, week.error])
 
-    if week.calibrating:
-        header = "Calibrating — no ELO yet"
-    elif week.started_on:
-        header = _started_line(week, prefix=f"Started tracking {week.started_on}")
-    else:
-        header = _started_line(week, prefix="Started Sunday")
-
-    lines = [f"Peak Elo: {week.peak_elo if week.peak_elo is not None else 0}", week_line, header, "", "```"]
+    lines = [*header, "", "```"]
     for day in week.days:
         lines.append(_format_day(day))
     lines.append("```")
     lines.append(_format_total(week))
     return "\n".join(lines)
-
-
-def _started_line(week: PlayerWeek, *, prefix: str) -> str:
-    if week.start_elo is None:
-        return f"{prefix} at unknown ELO"
-    level = f" (Lvl {week.start_level})" if week.start_level is not None else ""
-    return f"{prefix} at {week.start_elo} ELO{level}"
 
 
 def _format_day(day) -> str:
