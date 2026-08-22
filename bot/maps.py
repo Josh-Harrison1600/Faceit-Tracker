@@ -8,7 +8,7 @@ from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 
 from bot.db import Store
-from bot.faceit import FaceitClient, FaceitError, MatchResult, player_row_from_match_stats
+from bot.faceit import FaceitClient, FaceitError, MatchResult, elo_delta_from_match, player_row_from_match_stats
 
 logger = logging.getLogger(__name__)
 
@@ -203,7 +203,7 @@ async def collect_day_maps(
 
 
 async def last_map_for(
-    faceit: FaceitClient, player_id: str, nickname: str
+    faceit: FaceitClient, player_id: str, nickname: str, store: Store | None = None
 ) -> PlayerMaps:
     now = int(datetime.now(timezone.utc).timestamp())
     from_ts = now - 60 * 60 * 24 * 60
@@ -214,7 +214,14 @@ async def last_map_for(
     except FaceitError:
         logger.warning("Could not fetch live ELO for last map %s", nickname)
     return await _player_maps(
-        faceit, player_id, nickname, from_ts, now, limit=1, current_elo=current_elo
+        faceit,
+        player_id,
+        nickname,
+        from_ts,
+        now,
+        limit=1,
+        current_elo=current_elo,
+        store=store,
     )
 
 
@@ -227,6 +234,7 @@ async def _player_maps(
     *,
     limit: int | None = None,
     current_elo: int | None = None,
+    store: Store | None = None,
 ) -> PlayerMaps:
     lookback_from = from_ts - PRIOR_MATCH_LOOKBACK
     try:
@@ -289,12 +297,14 @@ async def _player_maps(
     await _fill_match_elo(faceit, player_id, all_maps)
     if current_elo is not None and all_maps:
         newest = max(all_maps, key=lambda item: item.finished_at or 0)
-        if newest.elo is None:
-            newest.elo = current_elo
+        newest.elo = current_elo
+        if store is not None:
+            await _fill_prior_elo_from_snapshot(store, player_id, all_maps, newest)
     _apply_elo_deltas(all_maps)
     maps = [item for item in all_maps if _in_window(item, from_ts, to_ts)]
     if limit:
         maps = maps[-limit:]
+    await _fill_missing_elo_deltas(faceit, player_id, maps)
     return PlayerMaps(nickname=nickname, maps=maps)
 
 
@@ -339,6 +349,46 @@ async def _fill_match_elo(
             stats.elo = series.get(stats.match_id[2:])
         elif stats.elo is None:
             stats.elo = series.get(f"1-{stats.match_id}")
+
+
+async def _fill_prior_elo_from_snapshot(
+    store: Store, player_id: str, all_maps: list[MapStats], newest: MapStats
+) -> None:
+    """If this is the only matchmaking map since the last snapshot, that snapshot is pre-match ELO."""
+    prior = next(
+        (
+            item
+            for item in reversed(all_maps)
+            if (item.finished_at or 0) < (newest.finished_at or 0)
+        ),
+        None,
+    )
+    if prior is None or prior.elo is not None:
+        return
+    snap = await store.snapshot_at_or_before(player_id, newest.finished_at or 0)
+    if snap is None:
+        return
+    since_snap = [
+        item
+        for item in all_maps
+        if snap.taken_at < (item.finished_at or 0) <= (newest.finished_at or 0)
+    ]
+    if len(since_snap) == 1:
+        prior.elo = snap.elo
+
+
+async def _fill_missing_elo_deltas(
+    faceit: FaceitClient, player_id: str, maps: list[MapStats]
+) -> None:
+    for stats in maps:
+        if stats.elo_delta is not None or not stats.match_id:
+            continue
+        try:
+            data = await faceit.get_match(stats.match_id)
+        except FaceitError as exc:
+            logger.warning("Match details failed for %s: %s", stats.match_id, exc)
+            continue
+        stats.elo_delta = elo_delta_from_match(data, player_id, stats.won)
 
 
 async def _match_stats_row(

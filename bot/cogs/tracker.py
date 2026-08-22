@@ -219,7 +219,7 @@ class TrackerCog(commands.Cog):
             player_id = profile.player_id
             display = profile.nickname
 
-        result = await last_map_for(self.faceit, player_id, display)
+        result = await last_map_for(self.faceit, player_id, display, self.store)
         await interaction.followup.send(embed=build_last_map_embed(result))
 
     @tasks.loop(time=time(hour=0, minute=0))

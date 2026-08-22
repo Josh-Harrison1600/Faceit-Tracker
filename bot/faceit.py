@@ -197,6 +197,9 @@ class FaceitClient:
     async def match_stats(self, match_id: str) -> dict:
         return await self._get(f"/matches/{match_id}/stats")
 
+    async def get_match(self, match_id: str) -> dict:
+        return await self._get(f"/matches/{match_id}")
+
     async def player_elo_by_match(self, player_id: str) -> dict[str, int]:
         """Per-match Elo from FACEIT's public stats time series (not on the Data API)."""
         url = f"https://api.faceit.com/stats/v1/stats/time/users/{player_id}/games/{self.game_id}"
@@ -308,3 +311,26 @@ def _matchmaking_result(player_id: str, match: dict) -> bool | None:
         return True
     team = teams.get(player_team) or {}
     return team.get("team_id") == winner
+
+
+def elo_delta_from_match(data: dict, player_id: str, won: bool | None) -> int | None:
+    """Estimate FACEIT ELO change from pre-match win probability. K=50."""
+    if won is None or not data.get("calculate_elo"):
+        return None
+    player_team: dict | None = None
+    for team in (data.get("teams") or {}).values():
+        roster = (team or {}).get("roster") or []
+        if any(player.get("player_id") == player_id for player in roster):
+            player_team = team
+            break
+    if player_team is None:
+        return None
+    raw = (player_team.get("stats") or {}).get("winProbability")
+    if raw is None:
+        return None
+    try:
+        expected = float(raw)
+    except (TypeError, ValueError):
+        return None
+    actual = 1.0 if won else 0.0
+    return int(round(50 * (actual - expected)))
