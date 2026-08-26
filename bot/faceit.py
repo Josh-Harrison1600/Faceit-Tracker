@@ -1,14 +1,23 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
+import os
+import shutil
+import subprocess
 from dataclasses import dataclass
+from urllib.parse import urlencode
 
 import httpx
 
 logger = logging.getLogger(__name__)
 
 FACEIT_API_BASE = "https://open.faceit.com/data/v4"
+CHROME_UA = (
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+    "(KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36"
+)
 
 
 class FaceitError(Exception):
@@ -34,6 +43,13 @@ class MatchResult:
     match_id: str | None = None
 
 
+@dataclass(frozen=True)
+class MatchElo:
+    match_id: str
+    elo: int
+    elo_delta: int | None = None
+
+
 class FaceitClient:
     def __init__(self, api_key: str, game_id: str = "cs2") -> None:
         self.game_id = game_id
@@ -49,7 +65,7 @@ class FaceitClient:
             timeout=30.0,
             headers={
                 "Accept": "application/json",
-                "User-Agent": "Mozilla/5.0 (compatible; CSProgressTracker/1.0)",
+                "User-Agent": CHROME_UA,
             },
         )
 
@@ -208,41 +224,109 @@ class FaceitClient:
         return await self._get(f"/matches/{match_id}")
 
     async def player_elo_by_match(self, player_id: str) -> dict[str, int]:
-        """Per-match Elo from FACEIT's public stats time series (not on the Data API)."""
-        by_id: dict[str, int] = {}
+        """Post-match Elo from FACEIT's stats time series (same numbers as the profile)."""
+        return {row.match_id: row.elo for row in await self.player_match_elos(player_id)}
+
+    async def player_match_elos(self, player_id: str) -> list[MatchElo]:
+        rows: list[MatchElo] = []
         for page in range(0, 20):
             items = await self._elo_history_page(player_id, page)
             if not items:
                 break
             for item in items:
-                if not isinstance(item, dict):
-                    continue
-                match_id = item.get("matchId") or item.get("match_id") or item.get("Match Id")
-                elo = item.get("elo") or item.get("gameElo") or item.get("Elo")
-                if not match_id or elo is None or elo == "":
-                    continue
-                try:
-                    by_id[str(match_id)] = int(float(elo))
-                except (TypeError, ValueError):
-                    continue
+                row = _match_elo_from_item(item)
+                if row is not None:
+                    rows.append(row)
             if len(items) < 100:
                 break
-        return by_id
+        return rows
 
     async def _elo_history_page(self, player_id: str, page: int) -> list:
         url = f"https://api.faceit.com/stats/v1/stats/time/users/{player_id}/games/{self.game_id}"
+        params = {"size": 100, "page": page}
         try:
-            response = await self._public.get(url, params={"size": 100, "page": page})
+            response = await self._public.get(url, params=params)
         except httpx.HTTPError as exc:
             logger.warning("FACEIT elo history failed for %s: %s", player_id, exc)
+            response = None
+        else:
+            if response.status_code < 400:
+                try:
+                    payload = response.json()
+                except json.JSONDecodeError:
+                    payload = None
+                else:
+                    items = payload if isinstance(payload, list) else payload.get("items") or []
+                    if isinstance(items, list):
+                        return items
+            elif page == 0:
+                logger.info("FACEIT elo history %s for %s; trying curl", response.status_code, player_id)
+
+        payload = await self._curl_json(f"{url}?{urlencode(params)}")
+        if payload is None:
             return []
-        if response.status_code >= 400:
-            if page == 0:
-                logger.info("FACEIT elo history %s for %s", response.status_code, player_id)
-            return []
-        payload = response.json()
         items = payload if isinstance(payload, list) else payload.get("items") or []
         return items if isinstance(items, list) else []
+
+    async def _curl_json(self, url: str) -> object | None:
+        exe = shutil.which("curl")
+        if not exe:
+            logger.warning("curl not found; FACEIT elo history unavailable")
+            return None
+        args = [
+            exe,
+            "-sS",
+            "-A",
+            CHROME_UA,
+            "-H",
+            "Accept: application/json",
+            "--max-time",
+            "30",
+            url,
+        ]
+        kwargs: dict = {
+            "stdout": asyncio.subprocess.PIPE,
+            "stderr": asyncio.subprocess.PIPE,
+        }
+        if os.name == "nt":
+            kwargs["creationflags"] = subprocess.CREATE_NO_WINDOW
+        try:
+            proc = await asyncio.create_subprocess_exec(*args, **kwargs)
+            stdout, stderr = await proc.communicate()
+        except OSError as exc:
+            logger.warning("curl elo history failed: %s", exc)
+            return None
+        if proc.returncode != 0:
+            logger.info("curl elo history exit %s: %s", proc.returncode, stderr.decode(errors="replace")[:200])
+            return None
+        try:
+            return json.loads(stdout.decode())
+        except json.JSONDecodeError:
+            logger.info("curl elo history was not JSON")
+            return None
+
+
+def _match_elo_from_item(item: dict) -> MatchElo | None:
+    if not isinstance(item, dict):
+        return None
+    match_id = item.get("matchId") or item.get("match_id") or item.get("Match Id")
+    raw = item.get("elo") or item.get("gameElo") or item.get("Elo")
+    if not match_id or raw in (None, ""):
+        return None
+    try:
+        elo = int(float(raw))
+    except (TypeError, ValueError):
+        return None
+    if elo <= 0:
+        return None
+    delta = None
+    raw_delta = item.get("elo_delta") if item.get("elo_delta") is not None else item.get("eloDelta")
+    if raw_delta not in (None, ""):
+        try:
+            delta = int(float(raw_delta))
+        except (TypeError, ValueError):
+            delta = None
+    return MatchElo(str(match_id), elo, delta)
 
 
 def player_row_from_match_stats(data: dict, player_id: str) -> dict | None:

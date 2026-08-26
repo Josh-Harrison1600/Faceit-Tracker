@@ -13,7 +13,7 @@ The bot cannot run until these exist. They are not created by this repo.
 3. Generate a **server-side** Data API key.
 4. Put it in `.env` as `FACEIT_API_KEY`.
 
-FACEIT only returns **current** ELO (no lifetime peak field). `/get-peak-elo` walks this season’s matchmaking history, stores the highest ELO it can recover, and `/report` only re-checks matches played since that last scan. Midnight snapshots still power daily up/down. Maps and W/L come from matchmaking history. Per-map K/D, ADR, HS%, KPR, and (when FACEIT sends them) rating, utility damage, and flashes come from CS2 match stats.
+FACEIT only returns **current** ELO on the official Data API. `/get-peak-elo` reads FACEIT’s match ELO history (the same `elo` / `elo_delta` numbers as the profile match list), stores the season high, and `/report` only re-checks matches played since that last scan. Placement / Unranked games have no ELO and are ignored. Midnight snapshots still power daily up/down. Maps and W/L come from matchmaking history. Per-map K/D, ADR, HS%, KPR, and (when FACEIT sends them) rating, utility damage, and flashes come from CS2 match stats.
 
 **Swing is not available** from the FACEIT Data API (that is a Leetify/third-party stat). Daily posts and `/last-map` omit it. Rating is shown only if FACEIT includes a Rating field; otherwise KPR is still shown. Flashes thrown vs enemies blinded appear only when those keys exist on the match.
 
@@ -93,7 +93,7 @@ On Sunday at 11:59 PM both the weekly recap and the daily breakdown post, to the
 - **`/report`:** current week. Today can be partial. Days after today are `N/A`.
 - **Sunday 11:59 PM:** posts the week that just **finished** (last Sunday through Saturday). This Sunday’s games go into next week’s recap.
 - Each player is one section in a **single** Discord message: Peak Elo, Peak Level, Current Elo, Current Level, then daily maps / W-L / ELO, then a weekly total.
-- **Peak Elo** is this FACEIT season’s matchmaking high (Season 9 started 5 Aug 2026), stored by `/get-peak-elo` and kept up to date on `/report`. Placement / Unranked matches are ignored. FACEIT’s API has no per-match ELO field, so ranked peak is reconstructed from live ELO and can be a few points off the number on the profile.
+- **Peak Elo** is this FACEIT season’s matchmaking high (Season 9 started 5 Aug 2026), stored by `/get-peak-elo` and kept up to date on `/report`. It uses the ELO FACEIT shows on each ranked match, not an estimate. Placement / Unranked matches are ignored.
 - W/L is CS2 **matchmaking** only. One matchmaking match counts as one map.
 - Daily ELO needs a midnight snapshot. If the bot was asleep, maps/W/L still show and ELO is `—`.
 - Players still calibrating have no ELO yet.
