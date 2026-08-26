@@ -10,6 +10,7 @@ from dataclasses import dataclass
 from urllib.parse import urlencode
 
 import httpx
+from curl_cffi.requests import AsyncSession
 
 logger = logging.getLogger(__name__)
 
@@ -69,12 +70,17 @@ class FaceitClient:
                 "User-Agent": CHROME_UA,
             },
         )
+        self._browser = AsyncSession(impersonate="chrome", timeout=30.0)
 
     async def close(self) -> None:
         if not self._client.is_closed:
             await self._client.aclose()
         if not self._public.is_closed:
             await self._public.aclose()
+        try:
+            await self._browser.close()
+        except Exception:
+            pass
 
     async def _get(self, path: str, params: dict[str, str | int] | None = None) -> dict:
         delay = 1.0
@@ -246,30 +252,55 @@ class FaceitClient:
             if len(items) < 100:
                 break
         if not saw_page:
-            raise FaceitError(
-                "Could not load FACEIT match ELO history. The bot needs curl "
-                "(Cloudflare blocks the Python HTTP client)."
-            )
+            raise FaceitError("Could not load FACEIT match ELO history.")
         return rows
 
     async def _elo_history_page(self, player_id: str, page: int) -> list:
-        """FACEIT's profile match ELO list. httpx is Cloudflare-blocked; use curl."""
+        """FACEIT profile match ELO list. Cloudflare blocks plain httpx; impersonate Chrome."""
         url = f"https://api.faceit.com/stats/v1/stats/time/users/{player_id}/games/{self.game_id}"
         params = {"size": 100, "page": page}
-        payload = await self._curl_json(f"{url}?{urlencode(params)}")
+        payload = await self._browser_json(url, params)
+        if payload is None:
+            payload = await self._curl_json(f"{url}?{urlencode(params)}")
         if payload is None:
             return []
         items = payload if isinstance(payload, list) else payload.get("items") or []
         return items if isinstance(items, list) else []
 
+    async def _browser_json(self, url: str, params: dict[str, str | int]) -> object | None:
+        try:
+            response = await self._browser.get(url, params=params)
+        except Exception as exc:
+            logger.warning("FACEIT elo history (chrome) failed: %s", exc)
+            return None
+        if response.status_code >= 400:
+            logger.info("FACEIT elo history (chrome) %s", response.status_code)
+            return None
+        try:
+            return response.json()
+        except Exception:
+            logger.info("FACEIT elo history (chrome) was not JSON")
+            return None
+
     async def _curl_json(self, url: str) -> object | None:
-        exe = shutil.which("curl")
+        exe = shutil.which("curl") or shutil.which("curl.exe")
+        if not exe:
+            for candidate in (
+                "/usr/bin/curl",
+                "/usr/local/bin/curl",
+                r"C:\Windows\System32\curl.exe",
+            ):
+                if os.path.isfile(candidate):
+                    exe = candidate
+                    break
         if not exe:
             logger.warning("curl not found; FACEIT elo history unavailable")
             return None
         args = [
             exe,
             "-sS",
+            "-L",
+            "--compressed",
             "-A",
             CHROME_UA,
             "-H",

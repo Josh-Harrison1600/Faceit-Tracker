@@ -13,7 +13,7 @@ The bot cannot run until these exist. They are not created by this repo.
 3. Generate a **server-side** Data API key.
 4. Put it in `.env` as `FACEIT_API_KEY`.
 
-FACEIT only returns **current** ELO on the official Data API. `/get-peak-elo` loops this season’s ranked matches and takes the highest `elo` FACEIT recorded on each (the same numbers as the profile). `/report` then only re-checks games since that last scan. Placement / Unranked games have no ELO and are ignored. The bot uses `curl` to read that match ELO list (plain Python is blocked by Cloudflare). Midnight snapshots still power daily up/down. Maps and W/L come from matchmaking history. Per-map K/D, ADR, HS%, KPR, and (when FACEIT sends them) rating, utility damage, and flashes come from CS2 match stats.
+FACEIT only returns **current** ELO on the official Data API. `/get-peak-elo` loops this season’s ranked matches and takes the highest `elo` FACEIT recorded on each (the same numbers as the profile). `/report` then only re-checks games since that last scan. Placement / Unranked games have no ELO and are ignored. The bot uses a Chrome-like HTTP client to read that match ELO list (plain Python requests are blocked by Cloudflare). Midnight snapshots still power daily up/down. Maps and W/L come from matchmaking history. Per-map K/D, ADR, HS%, KPR, and (when FACEIT sends them) rating, utility damage, and flashes come from CS2 match stats.
 
 **Swing is not available** from the FACEIT Data API (that is a Leetify/third-party stat). Daily posts and `/last-map` omit it. Rating is shown only if FACEIT includes a Rating field; otherwise KPR is still shown. Flashes thrown vs enemies blinded appear only when those keys exist on the match.
 
@@ -132,7 +132,7 @@ On the Mint laptop:
 
 ```bash
 sudo apt update
-sudo apt install -y python3 python3-venv python3-pip
+sudo apt install -y python3 python3-venv python3-pip curl
 cd ~/csprogresstracker
 chmod +x scripts/install-linux.sh
 ./scripts/install-linux.sh

@@ -6,7 +6,7 @@ cd "$ROOT"
 
 if ! command -v python3 >/dev/null 2>&1; then
   echo "Python 3 is missing. On Linux Mint run:"
-  echo "  sudo apt update && sudo apt install -y python3 python3-venv python3-pip"
+  echo "  sudo apt update && sudo apt install -y python3 python3-venv python3-pip curl"
   exit 1
 fi
 
@@ -40,6 +40,7 @@ ExecStart=${ROOT}/.venv/bin/python -m bot.main
 Restart=always
 RestartSec=10
 Environment=PYTHONUNBUFFERED=1
+Environment=PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 
 [Install]
 WantedBy=default.target
