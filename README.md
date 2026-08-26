@@ -13,7 +13,7 @@ The bot cannot run until these exist. They are not created by this repo.
 3. Generate a **server-side** Data API key.
 4. Put it in `.env` as `FACEIT_API_KEY`.
 
-FACEIT only returns **current** ELO. The bot snapshots ELO at local midnight so it can show daily up/down. Maps and W/L come from matchmaking history. Per-map K/D, ADR, HS%, KPR, and (when FACEIT sends them) rating, utility damage, and flashes come from CS2 match stats.
+FACEIT only returns **current** ELO (no lifetime peak field). `/get-peak-elo` walks this season’s matchmaking history, stores the highest ELO it can recover, and `/report` only re-checks matches played since that last scan. Midnight snapshots still power daily up/down. Maps and W/L come from matchmaking history. Per-map K/D, ADR, HS%, KPR, and (when FACEIT sends them) rating, utility damage, and flashes come from CS2 match stats.
 
 **Swing is not available** from the FACEIT Data API (that is a Leetify/third-party stat). Daily posts and `/last-map` omit it. Rating is shown only if FACEIT includes a Rating field; otherwise KPR is still shown. Flashes thrown vs enemies blinded appear only when those keys exist on the match.
 
@@ -70,8 +70,9 @@ python -m bot.main
 | `/report` | Anyone | Post **this** Sunday–Saturday week so far. Future days are `N/A` |
 | `/player-report nickname` | Anyone | Same week recap as `/report`, for one player (roster nick, or any FACEIT nick) |
 | `/last-map nickname` | Anyone | Per-map stats for that player's most recent matchmaking map (roster nick, or any FACEIT nick) |
+| `/get-peak-elo [nickname]` | Anyone | Scan this season’s matchmaking history and store peak ELO (whole roster, or one nick). First run can take a minute |
 
-`/report`, `/player-report`, and `/last-map` post in whatever channel you run them. Scheduled recaps go to the saved channels.
+`/report`, `/player-report`, and `/last-map` post in whatever channel you run them. Scheduled recaps go to the saved channels. `/report` and `/player-report` also refresh stored peaks from matches since the last scan.
 
 ## Channels and schedule
 
@@ -92,6 +93,7 @@ On Sunday at 11:59 PM both the weekly recap and the daily breakdown post, to the
 - **`/report`:** current week. Today can be partial. Days after today are `N/A`.
 - **Sunday 11:59 PM:** posts the week that just **finished** (last Sunday through Saturday). This Sunday’s games go into next week’s recap.
 - Each player is one section in a **single** Discord message: Peak Elo, Peak Level, Current Elo, Current Level, then daily maps / W-L / ELO, then a weekly total.
+- **Peak Elo** is this FACEIT season’s matchmaking high (Season 9 started 5 Aug 2026), stored by `/get-peak-elo` and kept up to date on `/report`. It is not a FACEIT API “lifetime peak” field.
 - W/L is CS2 **matchmaking** only. One matchmaking match counts as one map.
 - Daily ELO needs a midnight snapshot. If the bot was asleep, maps/W/L still show and ELO is `—`.
 - Players still calibrating have no ELO yet.

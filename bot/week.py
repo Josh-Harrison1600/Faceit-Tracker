@@ -8,6 +8,7 @@ from zoneinfo import ZoneInfo
 
 from bot.db import Store, TrackedPlayer
 from bot.faceit import FaceitClient, FaceitError, FaceitNotFound, MatchResult
+from bot.peaks import refresh_player_peak, skill_level_from_elo
 
 logger = logging.getLogger(__name__)
 
@@ -125,6 +126,7 @@ async def collect_week_stats(
                 store,
                 faceit,
                 player,
+                timezone_name=timezone_name,
                 week_start=week_start,
                 week_end=week_end,
                 now=now,
@@ -153,6 +155,7 @@ async def collect_week_for_player(
         store,
         faceit,
         player,
+        timezone_name=timezone_name,
         week_start=week_start,
         week_end=week_end,
         now=now,
@@ -166,6 +169,7 @@ async def _player_week(
     faceit: FaceitClient,
     player: TrackedPlayer,
     *,
+    timezone_name: str,
     week_start: datetime,
     week_end: datetime,
     now: datetime,
@@ -278,6 +282,18 @@ async def _player_week(
             )
         )
 
+    try:
+        peak_elo = await refresh_player_peak(
+            store,
+            faceit,
+            player.player_id,
+            timezone_name,
+            live_elo=profile.elo,
+        )
+    except FaceitError as exc:
+        logger.warning("Peak ELO refresh failed for %s: %s", profile.nickname, exc)
+        peak_elo = max(profile.elo, await store.peak_elo(player.player_id))
+
     return PlayerWeek(
         player_id=player.player_id,
         nickname=profile.nickname,
@@ -288,8 +304,12 @@ async def _player_week(
         days=resolved,
         started_on=started_on,
         calibrating=calibrating,
-        peak_elo=max(profile.elo, await store.peak_elo(player.player_id)),
-        peak_level=max(profile.level, await store.peak_level(player.player_id)),
+        peak_elo=peak_elo,
+        peak_level=max(
+            profile.level,
+            await store.peak_level(player.player_id),
+            skill_level_from_elo(peak_elo),
+        ),
         current_elo=None if calibrating else profile.elo,
         current_level=None if calibrating else profile.level,
     )

@@ -45,7 +45,13 @@ class FaceitClient:
             },
             timeout=30.0,
         )
-        self._public = httpx.AsyncClient(timeout=30.0)
+        self._public = httpx.AsyncClient(
+            timeout=30.0,
+            headers={
+                "Accept": "application/json",
+                "User-Agent": "Mozilla/5.0 (compatible; CSProgressTracker/1.0)",
+            },
+        )
 
     async def close(self) -> None:
         if not self._client.is_closed:
@@ -156,28 +162,29 @@ class FaceitClient:
         return matches
 
     async def player_match_stats(
-        self, player_id: str, from_ts: int, to_ts: int, *, limit: int = 100
+        self, player_id: str, from_ts: int, to_ts: int, *, limit: int = 100, max_offset: int = 200
     ) -> list[dict]:
         """Per-match CS2 stats. from/to are unix seconds; the API wants milliseconds."""
         from_ms = from_ts * 1000
         to_ms = to_ts * 1000
         try:
             return await self._player_match_stats_pages(
-                player_id, limit, extra={"from": from_ms, "to": to_ms}
+                player_id, limit, extra={"from": from_ms, "to": to_ms}, max_offset=max_offset
             )
         except FaceitError:
             logger.info("Retrying player CS2 stats without from/to for %s", player_id)
-            return await self._player_match_stats_pages(player_id, limit)
+            return await self._player_match_stats_pages(player_id, limit, max_offset=max_offset)
 
     async def _player_match_stats_pages(
         self,
         player_id: str,
         limit: int,
         extra: dict[str, str | int] | None = None,
+        max_offset: int = 200,
     ) -> list[dict]:
         items: list[dict] = []
         offset = 0
-        while offset <= 200:
+        while offset <= max_offset:
             params: dict[str, str | int] = {"offset": offset, "limit": limit}
             if extra:
                 params.update(extra)
@@ -202,30 +209,40 @@ class FaceitClient:
 
     async def player_elo_by_match(self, player_id: str) -> dict[str, int]:
         """Per-match Elo from FACEIT's public stats time series (not on the Data API)."""
+        by_id: dict[str, int] = {}
+        for page in range(0, 20):
+            items = await self._elo_history_page(player_id, page)
+            if not items:
+                break
+            for item in items:
+                if not isinstance(item, dict):
+                    continue
+                match_id = item.get("matchId") or item.get("match_id") or item.get("Match Id")
+                elo = item.get("elo") or item.get("gameElo") or item.get("Elo")
+                if not match_id or elo is None or elo == "":
+                    continue
+                try:
+                    by_id[str(match_id)] = int(float(elo))
+                except (TypeError, ValueError):
+                    continue
+            if len(items) < 100:
+                break
+        return by_id
+
+    async def _elo_history_page(self, player_id: str, page: int) -> list:
         url = f"https://api.faceit.com/stats/v1/stats/time/users/{player_id}/games/{self.game_id}"
         try:
-            response = await self._public.get(url, params={"size": 100})
+            response = await self._public.get(url, params={"size": 100, "page": page})
         except httpx.HTTPError as exc:
             logger.warning("FACEIT elo history failed for %s: %s", player_id, exc)
-            return {}
+            return []
         if response.status_code >= 400:
-            logger.info("FACEIT elo history %s for %s", response.status_code, player_id)
-            return {}
+            if page == 0:
+                logger.info("FACEIT elo history %s for %s", response.status_code, player_id)
+            return []
         payload = response.json()
         items = payload if isinstance(payload, list) else payload.get("items") or []
-        by_id: dict[str, int] = {}
-        for item in items:
-            if not isinstance(item, dict):
-                continue
-            match_id = item.get("matchId") or item.get("match_id") or item.get("Match Id")
-            elo = item.get("elo") or item.get("gameElo") or item.get("Elo")
-            if not match_id or elo is None or elo == "":
-                continue
-            try:
-                by_id[str(match_id)] = int(float(elo))
-            except (TypeError, ValueError):
-                continue
-        return by_id
+        return items if isinstance(items, list) else []
 
 
 def player_row_from_match_stats(data: dict, player_id: str) -> dict | None:

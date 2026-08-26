@@ -29,6 +29,13 @@ class Snapshot:
     level: int
 
 
+@dataclass(frozen=True)
+class EloPeak:
+    player_id: str
+    peak_elo: int
+    checked_at: int
+
+
 class Store:
     def __init__(self, db_path: Path) -> None:
         self.db_path = db_path
@@ -76,6 +83,13 @@ class Store:
             CREATE TABLE IF NOT EXISTS settings (
                 key TEXT PRIMARY KEY,
                 value TEXT NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS elo_peaks (
+                player_id TEXT PRIMARY KEY,
+                peak_elo INTEGER NOT NULL,
+                checked_at INTEGER NOT NULL,
+                FOREIGN KEY (player_id) REFERENCES players(player_id) ON DELETE CASCADE
             );
             """
         )
@@ -203,9 +217,33 @@ class Store:
             (player_id,),
         )
         row = await cursor.fetchone()
-        if row is None or row[0] is None:
-            return 0
-        return int(row[0])
+        snap = 0 if row is None or row[0] is None else int(row[0])
+        recorded = await self.get_recorded_peak(player_id)
+        stored = recorded.peak_elo if recorded else 0
+        return max(snap, stored)
+
+    async def get_recorded_peak(self, player_id: str) -> EloPeak | None:
+        cursor = await self.db.execute(
+            "SELECT player_id, peak_elo, checked_at FROM elo_peaks WHERE player_id = ?",
+            (player_id,),
+        )
+        row = await cursor.fetchone()
+        if row is None:
+            return None
+        return EloPeak(row["player_id"], int(row["peak_elo"]), int(row["checked_at"]))
+
+    async def set_recorded_peak(self, player_id: str, peak_elo: int, checked_at: int) -> None:
+        await self.db.execute(
+            """
+            INSERT INTO elo_peaks (player_id, peak_elo, checked_at)
+            VALUES (?, ?, ?)
+            ON CONFLICT(player_id) DO UPDATE SET
+                peak_elo = MAX(elo_peaks.peak_elo, excluded.peak_elo),
+                checked_at = excluded.checked_at
+            """,
+            (player_id, peak_elo, checked_at),
+        )
+        await self.db.commit()
 
     async def peak_level(self, player_id: str) -> int:
         cursor = await self.db.execute(

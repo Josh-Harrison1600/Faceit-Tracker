@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import logging
 from datetime import datetime, time
 from zoneinfo import ZoneInfo
@@ -11,6 +12,7 @@ from discord.ext import commands, tasks
 from bot.db import SETTING_DAILY_CHANNEL_ID, SETTING_WEEKLY_CHANNEL_ID, Store, TrackedPlayer
 from bot.faceit import FaceitClient, FaceitError, FaceitNotFound
 from bot.maps import collect_day_maps, last_map_for
+from bot.peaks import refresh_player_peak
 from bot.report import build_daily_embed, build_last_map_embed, build_week_embed
 from bot.week import (
     collect_week_for_player,
@@ -221,6 +223,56 @@ class TrackerCog(commands.Cog):
 
         result = await last_map_for(self.faceit, player_id, display, self.store)
         await interaction.followup.send(embed=build_last_map_embed(result))
+
+    @app_commands.command(
+        name="get-peak-elo",
+        description="Scan this season's matchmaking history and store each player's peak ELO",
+    )
+    @app_commands.describe(nickname="FACEIT nickname (omit to scan the whole roster)")
+    async def get_peak_elo(
+        self, interaction: discord.Interaction, nickname: str | None = None
+    ) -> None:
+        await interaction.response.defer()
+        tz_name = self.bot.settings.timezone
+        if nickname:
+            player = await self.store.find_player_by_nickname(nickname.strip())
+            if player is None:
+                await interaction.followup.send(
+                    f"**{nickname}** is not on the roster. Add them with `/addplayer` first."
+                )
+                return
+            players = [player]
+        else:
+            players = await self.store.list_players()
+            if not players:
+                await interaction.followup.send("No players tracked yet. Use `/addplayer`.")
+                return
+
+        lines: list[str] = []
+        for index, player in enumerate(players):
+            if index:
+                await asyncio.sleep(0.2)
+            try:
+                profile = await self.faceit.get_player(player.player_id)
+                peak = await refresh_player_peak(
+                    self.store,
+                    self.faceit,
+                    player.player_id,
+                    tz_name,
+                    live_elo=profile.elo,
+                    full=True,
+                )
+            except FaceitNotFound:
+                lines.append(f"• **{player.nickname}** — FACEIT profile not found")
+                continue
+            except FaceitError as exc:
+                logger.warning("get-peak-elo failed for %s: %s", player.nickname, exc)
+                lines.append(f"• **{player.nickname}** — could not scan history")
+                continue
+            lines.append(f"• **{player.nickname}** — {peak}")
+
+        header = "Season peak ELO (matchmaking):"
+        await interaction.followup.send("\n".join([header, *lines])[:2000])
 
     @tasks.loop(time=time(hour=0, minute=0))
     async def midnight_snapshot(self) -> None:
