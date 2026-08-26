@@ -65,7 +65,7 @@ async def refresh_player_peak(
 
     if full or recorded is None:
         from_ts = season_start_ts(timezone_name)
-        baseline = recorded.peak_elo if recorded else 0
+        baseline = 0
     else:
         from_ts = recorded.checked_at
         baseline = recorded.peak_elo
@@ -77,7 +77,7 @@ async def refresh_player_peak(
         peak = max(baseline, scanned, live_elo)
 
     if tracked:
-        await store.set_recorded_peak(player_id, peak, now_ts)
+        await store.set_recorded_peak(player_id, peak, now_ts, replace=full)
         return max(peak, await store.peak_elo(player_id))
     return peak
 

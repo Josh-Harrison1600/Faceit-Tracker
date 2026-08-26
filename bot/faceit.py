@@ -331,16 +331,28 @@ def _matchmaking_result(player_id: str, match: dict) -> bool | None:
 
 
 def elo_delta_from_match(data: dict, player_id: str, won: bool | None) -> int | None:
-    """Estimate FACEIT ELO change from pre-match win probability. K=50."""
+    """Estimate FACEIT ELO change from pre-match win probability. K=50.
+
+    Placement / unranked matches still have calculate_elo=true on the API, but
+    FACEIT shows them as Unranked and does not change visible ELO. Skip those
+    (game_skill_level 0 at match time).
+    """
     if won is None or not data.get("calculate_elo"):
         return None
     player_team: dict | None = None
+    skill_level = 0
     for team in (data.get("teams") or {}).values():
         roster = (team or {}).get("roster") or []
-        if any(player.get("player_id") == player_id for player in roster):
-            player_team = team
-            break
-    if player_team is None:
+        player = next((p for p in roster if p.get("player_id") == player_id), None)
+        if player is None:
+            continue
+        player_team = team
+        try:
+            skill_level = int(player.get("game_skill_level") or 0)
+        except (TypeError, ValueError):
+            skill_level = 0
+        break
+    if player_team is None or skill_level <= 0:
         return None
     raw = (player_team.get("stats") or {}).get("winProbability")
     if raw is None:

@@ -232,13 +232,16 @@ class Store:
             return None
         return EloPeak(row["player_id"], int(row["peak_elo"]), int(row["checked_at"]))
 
-    async def set_recorded_peak(self, player_id: str, peak_elo: int, checked_at: int) -> None:
+    async def set_recorded_peak(
+        self, player_id: str, peak_elo: int, checked_at: int, *, replace: bool = False
+    ) -> None:
+        peak_sql = "excluded.peak_elo" if replace else "MAX(elo_peaks.peak_elo, excluded.peak_elo)"
         await self.db.execute(
-            """
+            f"""
             INSERT INTO elo_peaks (player_id, peak_elo, checked_at)
             VALUES (?, ?, ?)
             ON CONFLICT(player_id) DO UPDATE SET
-                peak_elo = MAX(elo_peaks.peak_elo, excluded.peak_elo),
+                peak_elo = {peak_sql},
                 checked_at = excluded.checked_at
             """,
             (player_id, peak_elo, checked_at),

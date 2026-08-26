@@ -93,7 +93,7 @@ On Sunday at 11:59 PM both the weekly recap and the daily breakdown post, to the
 - **`/report`:** current week. Today can be partial. Days after today are `N/A`.
 - **Sunday 11:59 PM:** posts the week that just **finished** (last Sunday through Saturday). This Sunday’s games go into next week’s recap.
 - Each player is one section in a **single** Discord message: Peak Elo, Peak Level, Current Elo, Current Level, then daily maps / W-L / ELO, then a weekly total.
-- **Peak Elo** is this FACEIT season’s matchmaking high (Season 9 started 5 Aug 2026), stored by `/get-peak-elo` and kept up to date on `/report`. It is not a FACEIT API “lifetime peak” field.
+- **Peak Elo** is this FACEIT season’s matchmaking high (Season 9 started 5 Aug 2026), stored by `/get-peak-elo` and kept up to date on `/report`. Placement / Unranked matches are ignored. FACEIT’s API has no per-match ELO field, so ranked peak is reconstructed from live ELO and can be a few points off the number on the profile.
 - W/L is CS2 **matchmaking** only. One matchmaking match counts as one map.
 - Daily ELO needs a midnight snapshot. If the bot was asleep, maps/W/L still show and ELO is `—`.
 - Players still calibrating have no ELO yet.
