@@ -267,7 +267,7 @@ class TrackerCog(commands.Cog):
                 continue
             except FaceitError as exc:
                 logger.warning("get-peak-elo failed for %s: %s", player.nickname, exc)
-                lines.append(f"• **{player.nickname}** — could not scan history")
+                lines.append(f"• **{player.nickname}** — could not read FACEIT match ELO ({exc})")
                 continue
             lines.append(f"• **{player.nickname}** — {peak}")
 

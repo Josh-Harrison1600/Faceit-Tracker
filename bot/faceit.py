@@ -48,6 +48,7 @@ class MatchElo:
     match_id: str
     elo: int
     elo_delta: int | None = None
+    date_ms: int | None = None
 
 
 class FaceitClient:
@@ -225,43 +226,36 @@ class FaceitClient:
 
     async def player_elo_by_match(self, player_id: str) -> dict[str, int]:
         """Post-match Elo from FACEIT's stats time series (same numbers as the profile)."""
-        return {row.match_id: row.elo for row in await self.player_match_elos(player_id)}
+        try:
+            return {row.match_id: row.elo for row in await self.player_match_elos(player_id)}
+        except FaceitError:
+            return {}
 
     async def player_match_elos(self, player_id: str) -> list[MatchElo]:
         rows: list[MatchElo] = []
+        saw_page = False
         for page in range(0, 20):
             items = await self._elo_history_page(player_id, page)
             if not items:
                 break
+            saw_page = True
             for item in items:
                 row = _match_elo_from_item(item)
                 if row is not None:
                     rows.append(row)
             if len(items) < 100:
                 break
+        if not saw_page:
+            raise FaceitError(
+                "Could not load FACEIT match ELO history. The bot needs curl "
+                "(Cloudflare blocks the Python HTTP client)."
+            )
         return rows
 
     async def _elo_history_page(self, player_id: str, page: int) -> list:
+        """FACEIT's profile match ELO list. httpx is Cloudflare-blocked; use curl."""
         url = f"https://api.faceit.com/stats/v1/stats/time/users/{player_id}/games/{self.game_id}"
         params = {"size": 100, "page": page}
-        try:
-            response = await self._public.get(url, params=params)
-        except httpx.HTTPError as exc:
-            logger.warning("FACEIT elo history failed for %s: %s", player_id, exc)
-            response = None
-        else:
-            if response.status_code < 400:
-                try:
-                    payload = response.json()
-                except json.JSONDecodeError:
-                    payload = None
-                else:
-                    items = payload if isinstance(payload, list) else payload.get("items") or []
-                    if isinstance(items, list):
-                        return items
-            elif page == 0:
-                logger.info("FACEIT elo history %s for %s; trying curl", response.status_code, player_id)
-
         payload = await self._curl_json(f"{url}?{urlencode(params)}")
         if payload is None:
             return []
@@ -326,7 +320,17 @@ def _match_elo_from_item(item: dict) -> MatchElo | None:
             delta = int(float(raw_delta))
         except (TypeError, ValueError):
             delta = None
-    return MatchElo(str(match_id), elo, delta)
+    date_ms = None
+    raw_date = item.get("date") if item.get("date") is not None else item.get("created_at")
+    if raw_date not in (None, ""):
+        try:
+            date_ms = int(float(raw_date))
+        except (TypeError, ValueError):
+            date_ms = None
+        else:
+            if date_ms < 10**12:
+                date_ms *= 1000
+    return MatchElo(str(match_id), elo, delta, date_ms)
 
 
 def player_row_from_match_stats(data: dict, player_id: str) -> dict | None:

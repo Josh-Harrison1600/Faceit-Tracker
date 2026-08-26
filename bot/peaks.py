@@ -5,7 +5,7 @@ from datetime import datetime, timezone
 from zoneinfo import ZoneInfo
 
 from bot.db import Store
-from bot.faceit import FaceitClient, FaceitError
+from bot.faceit import FaceitClient, FaceitError, MatchElo
 
 logger = logging.getLogger(__name__)
 
@@ -48,14 +48,18 @@ def lookup_match_elo(known: dict[str, int], match_id: str | None) -> int | None:
     return known.get(f"1-{match_id}")
 
 
-def _expand_match_ids(ids: set[str]) -> set[str]:
-    out = set(ids)
-    for match_id in ids:
-        if match_id.startswith("1-"):
-            out.add(match_id[2:])
-        else:
-            out.add(f"1-{match_id}")
-    return out
+def _row_peak(row: MatchElo) -> int:
+    peak = row.elo
+    if row.elo_delta is not None:
+        peak = max(peak, row.elo - row.elo_delta)
+    return peak
+
+
+def _in_window(row: MatchElo, from_ts: int, to_ts: int) -> bool:
+    if row.date_ms is None:
+        return True
+    ts = row.date_ms // 1000
+    return from_ts <= ts < to_ts
 
 
 async def refresh_player_peak(
@@ -87,7 +91,6 @@ async def refresh_player_peak(
 
     if tracked:
         await store.set_recorded_peak(player_id, peak, now_ts, replace=full)
-        return max(peak, await store.peak_elo(player_id))
     return peak
 
 
@@ -99,25 +102,12 @@ async def scan_peak(
     to_ts: int,
     live_elo: int,
 ) -> int:
-    """Highest matchmaking ELO FACEIT recorded in [from_ts, to_ts)."""
+    """Highest ranked ELO FACEIT recorded on season matchmaking games in [from_ts, to_ts)."""
     peak = live_elo
-    try:
-        matches = await faceit.matchmaking_matches(player_id, from_ts, to_ts)
-    except FaceitError as exc:
-        logger.warning("Peak scan history failed for %s: %s", player_id, exc)
-        return peak
-
-    season_ids = _expand_match_ids({match.match_id for match in matches if match.match_id})
-    try:
-        rows = await faceit.player_match_elos(player_id)
-    except FaceitError as exc:
-        logger.warning("Peak scan elo history failed for %s: %s", player_id, exc)
-        return peak
-
+    rows = await faceit.player_match_elos(player_id)
     for row in rows:
-        if row.match_id not in season_ids:
+        if not _in_window(row, from_ts, to_ts):
             continue
-        peak = max(peak, row.elo)
-        if row.elo_delta is not None:
-            peak = max(peak, row.elo - row.elo_delta)
+        peak = max(peak, _row_peak(row))
+    logger.info("Peak scan %s: %s ranked ELO rows, peak %s", player_id, len(rows), peak)
     return peak
