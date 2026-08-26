@@ -248,7 +248,7 @@ class TrackerCog(commands.Cog):
                 await interaction.followup.send("No players tracked yet. Use `/addplayer`.")
                 return
 
-        lines: list[str] = []
+        results: list[tuple[int | None, str]] = []
         for index, player in enumerate(players):
             if index:
                 await asyncio.sleep(0.2)
@@ -263,15 +263,24 @@ class TrackerCog(commands.Cog):
                     full=True,
                 )
             except FaceitNotFound:
-                lines.append(f"• **{player.nickname}** — FACEIT profile not found")
+                results.append((None, f"**{player.nickname}** — FACEIT profile not found"))
                 continue
             except FaceitError as exc:
                 logger.warning("get-peak-elo failed for %s: %s", player.nickname, exc)
-                lines.append(f"• **{player.nickname}** — could not read FACEIT match ELO ({exc})")
+                results.append((None, f"**{player.nickname}** — could not read FACEIT match ELO ({exc})"))
                 continue
-            lines.append(f"• **{player.nickname}** — {peak}")
+            results.append((peak, f"**{player.nickname}** — {peak}"))
 
-        header = "Season peak ELO (matchmaking):"
+        results.sort(key=lambda item: (item[0] is None, -(item[0] or 0)))
+        lines: list[str] = []
+        place = 1
+        for peak, text in results:
+            if peak is None:
+                lines.append(f"• {text}")
+            else:
+                lines.append(f"{place}. {text}")
+                place += 1
+        header = "Season peak ELO:"
         await interaction.followup.send("\n".join([header, *lines])[:2000])
 
     @tasks.loop(time=time(hour=0, minute=0))
