@@ -153,6 +153,8 @@ journalctl --user -u csprogresstracker -f
 
 That systemd user service starts on login and restarts if the bot crashes. `loginctl enable-linger` (the install script tries this) keeps it running after you log out.
 
+To **pull a new `main` and restart** (peak ELO / `curl_cffi`), follow [docs/linux-update.md](docs/linux-update.md). Do not re-run `install-linux.sh` for a normal update.
+
 ### 2. Screen off, machine still awake
 
 Plug the laptop in. Then:
